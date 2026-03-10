@@ -1,0 +1,297 @@
+package rules;
+
+import com.drools.application.config.ValidationConfig;
+import com.drools.application.excel.ExcelFile;
+import com.drools.domain.model.DebtRow;
+import com.drools.domain.model.DebtError;
+import com.drools.domain.model.SystemParam;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+
+
+// ========================= VALIDACIÓN FORMATO EXCEL =========================
+rule "Valid Excel File Format"
+    no-loop true
+when
+    $file : ExcelFile(validFormat == false)
+then
+    $file.setError("Asegurese de que el archivo EXCEL tiene el formato correcto");
+end
+
+
+// ========================= AGREGAR ERRORES =========================
+rule "Agregar errores a ExcelFile"
+    no-loop true
+    salience 10000
+when
+    $file : ExcelFile()
+    $error : DebtError()
+then
+    $file.addError($error);
+end
+
+
+// ========================= FILAS VACÍAS =========================
+rule "Validar filas vacías DataCompleta"
+    no-loop true
+when
+    $file : ExcelFile(serviceType == "C")
+    $row : DebtRow() from $file.getDebtRows()
+    eval(
+        $row.getEmissionDate() == null &&
+        $row.getDueDate() == null &&
+        $row.getClientCodeNormalized() == null &&
+        $row.getClientNameNormalized() == null &&
+        ($row.getServiceType() == null || $row.getServiceType().isEmpty()) &&
+        $row.getDescriptionNormalized() == null &&
+        $row.getAmount() == null
+    )
+then
+    insert(new DebtError(0, "Fecha de emisión", $row.getRowIndex(), "Debe tener un valor", null, 1));
+    insert(new DebtError(0, "Fecha de vencimiento", $row.getRowIndex(), "Debe tener un valor", null, 1));
+    insert(new DebtError(0, "Código de Cliente", $row.getRowIndex(), "Debe tener un valor", null, 1));
+    insert(new DebtError(0, "Nombres o Apellidos", $row.getRowIndex(), "Debe tener un valor", null, 1));
+    insert(new DebtError(0, "Servicio", $row.getRowIndex(), "Debe tener un valor", null, 1));
+    insert(new DebtError(0, "Concepto", $row.getRowIndex(), "Debe tener un valor", null, 1));
+    insert(new DebtError(0, "Monto", $row.getRowIndex(), "Debe tener un valor", null, 1));
+end
+
+rule "Validar filas vacías DataParcial"
+    no-loop true
+when
+    $file : ExcelFile(serviceType == "P")
+    $row : DebtRow() from $file.getDebtRows()
+    eval(
+        $row.getClientCodeNormalized() == null &&
+        $row.getClientNameNormalized() == null &&
+        ($row.getServiceType() == null || $row.getServiceType().isEmpty())
+    )
+then
+    insert(new DebtError(0, "Código de Cliente", $row.getRowIndex(), "Debe tener un valor", null, 1));
+    insert(new DebtError(0, "Nombres o Apellidos", $row.getRowIndex(), "Debe tener un valor", null, 1));
+    insert(new DebtError(0, "Servicio", $row.getRowIndex(), "Debe tener un valor", null, 1));
+end
+
+
+// ========================= VALIDACIÓN CAMPOS =========================
+rule "Validar Código de Cliente obligatorio y formato"
+    no-loop true
+when
+    $row : DebtRow()
+    eval($row.getClientCode() == null || !$row.getClientCode().matches("^[0-9a-zA-Z]{1,13}$"))
+then
+    insert(new DebtError(0, "Código de Cliente", $row.getRowIndex(), "El código de cliente es obligatorio, máximo 13 caracteres y solo alfanuméricos", $row.getClientCode(), 1));
+end
+
+rule "Validar Nombre del Cliente obligatorio y formato"
+    no-loop true
+when
+    $row : DebtRow()
+    eval($row.getClientName() == null || $row.getClientName().length() < 4 || $row.getClientName().length() > 80)
+then
+    insert(new DebtError(0, "Nombre del Cliente", $row.getRowIndex(), "El nombre del cliente es obligatorio, mínimo 4 y máximo 80 caracteres", $row.getClientName(), 1));
+end
+
+rule "Validar Descripción obligatoria y formato"
+    no-loop true
+when
+    $row : DebtRow(serviceType == "C")
+    eval($row.getDescription() == null || $row.getDescription().length() < 3 || $row.getDescription().length() > 12)
+then
+    insert(new DebtError(0, "Descripción", $row.getRowIndex(), "La descripción es obligatoria, mínimo 3 y máximo 12 caracteres", $row.getDescription(), 1));
+end
+
+rule "Validar Fecha de Emisión requerida y formato"
+    no-loop true
+when
+    $row : DebtRow(serviceType == "C")
+then
+    if($row.getEmissionDate() == null) {
+        insert(new DebtError(0, "Fecha de emisión", $row.getRowIndex(), "La fecha de emisión es obligatoria", null, 1));
+    }
+end
+
+rule "Validar Fecha de Vencimiento requerida y formato"
+    no-loop true
+when
+    $row : DebtRow(serviceType == "C")
+then
+    if($row.getDueDate() == null) {
+        insert(new DebtError(0, "Fecha de vencimiento", $row.getRowIndex(), "La fecha de vencimiento es obligatoria", null, 1));
+    }
+end
+
+rule "Validar Fecha de Vencimiento mayor o igual a Emision"
+    no-loop true
+when
+    $row : DebtRow(serviceType == "C")
+then
+    if($row.getEmissionDate() != null && $row.getDueDate() != null && $row.getDueDate().isBefore($row.getEmissionDate())) {
+        insert(new DebtError(0, "Fecha de vencimiento", $row.getRowIndex(), "La fecha de vencimiento debe ser mayor o igual a la fecha de emisión", $row.getDueDate().toString(), 1));
+    }
+end
+
+rule "Validar Monto obligatorio, formato y mayor a 0.01"
+    no-loop true
+when
+    $row : DebtRow(serviceType == "C")
+then
+    if($row.getAmount() == null) {
+        insert(new DebtError(0, "Monto", $row.getRowIndex(), "El monto es obligatorio", null, 1));
+    } else if($row.getAmount().compareTo(new BigDecimal("0.01")) < 0) {
+        insert(new DebtError(0, "Monto", $row.getRowIndex(), "El monto debe ser mayor a 0", $row.getAmount().toString(), 1));
+    }
+end
+
+rule "Validar Nombres y Apellidos (mínimo dos palabras)"
+    no-loop true
+when
+    $file : ExcelFile()
+    $row : DebtRow(clientNameNormalized != null, $name : clientNameNormalized, $rowIndex : rowIndex, $rawName : clientName) from $file.getDebtRows()
+    eval(!$name.matches("^([a-záéíóúñü]{2,}\\s+){1,}[a-záéíóúñü]{2,}$"))
+then
+    insert(new DebtError(
+        0,
+        "Nombre del Cliente",
+        $rowIndex,
+        "El nombre del cliente debe contener al menos dos palabras de mínimo 2 letras cada una",
+        $rawName,
+        1
+    ));
+end
+
+rule "No permitir mismo código con distinto nombre (optimizada)"
+    no-loop true
+when
+    $file : ExcelFile()
+then
+    // code -> primer nombre normalizado visto
+    Map<String, String> firstNameByCode = new HashMap<>();
+    // code -> primer nombre original (opcional, para referencia/debug)
+    Map<String, String> firstRawNameByCode = new HashMap<>();
+
+    for (DebtRow row : $file.getDebtRows()) {
+        String codeNorm = row.getClientCodeNormalized();
+        String nameNorm = row.getClientNameNormalized();
+
+        if (codeNorm == null || nameNorm == null) {
+            continue;
+        }
+
+        String firstNameNorm = firstNameByCode.get(codeNorm);
+        if (firstNameNorm == null) {
+            firstNameByCode.put(codeNorm, nameNorm);
+            firstRawNameByCode.put(codeNorm, row.getClientName());
+            continue;
+        }
+
+        // mismo código, distinto nombre => error
+        if (!firstNameNorm.equals(nameNorm)) {
+            insert(new DebtError(
+                0,
+                "Nombre del Cliente",
+                row.getRowIndex(),
+                "El Nombre del cliente es igual a un registro anterior que tiene el mismo código",
+                row.getClientName(),
+                1
+            ));
+        }
+    }
+end
+
+// ========================= DETECTAR DUPLICADOS =========================
+rule "Detectar duplicados DataCompleta y DataParcial"
+    no-loop true
+when
+    $file : ExcelFile()
+then
+    Map<String, List<DebtRow>> groupedCompleta = new HashMap<>();
+    Map<String, List<DebtRow>> groupedParcial = new HashMap<>();
+
+    for(DebtRow row : $file.getDebtRows()) {
+        String key = row.getDuplicateKeyNormalized();
+        if("C".equals(row.getServiceType()) && key != null && !key.isEmpty()) {
+            groupedCompleta.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+        } else if("P".equals(row.getServiceType()) && key != null && !key.isEmpty()) {
+            groupedParcial.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+        }
+    }
+
+    for(Map.Entry<String, List<DebtRow>> entry : groupedCompleta.entrySet()) {
+        if(entry.getValue().size() > 1) {
+            for(DebtRow row : entry.getValue()) {
+                insert(new DebtError(0, "Código de Cliente", row.getRowIndex(), "El código deudor '" + row.getDuplicateKey() + "' ya existe en DataCompleta, el nombre ingresado no se va a actualizar.", row.getDuplicateKey(), 1));
+            }
+        }
+    }
+
+    for(Map.Entry<String, List<DebtRow>> entry : groupedParcial.entrySet()) {
+        if(entry.getValue().size() > 1) {
+            for(DebtRow row : entry.getValue()) {
+                insert(new DebtError(0, "Código de Cliente", row.getRowIndex(), "El código deudor '" + row.getDuplicateKey() + "' ya existe en DataParcial, el nombre ingresado no se va a actualizar.", row.getDuplicateKey(), 1));
+            }
+        }
+    }
+end
+
+
+// ========================= VALIDAR MÁXIMO DE FILAS =========================
+rule "Validar máximo de filas de detalle por tipo de servicio"
+    no-loop true
+when
+    $config : ValidationConfig()
+    $file : ExcelFile(serviceType == "C" || serviceType == "P")
+then
+    int rows = $file.getRowCount();
+    if(("C".equals($file.getServiceType()) && (rows - $config.getDataCompletaRowStart() + 1) > $config.getMaxRows()) ||
+       ("P".equals($file.getServiceType()) && (rows - $config.getDataParcialRowStart() + 1) > $config.getMaxRows())) {
+        $file.setError("El archivo Excel no puede tener más de " + $config.getMaxRows() + " filas de detalle para el tipo de servicio " + $file.getServiceType());
+    }
+end
+
+
+// ========================= VALIDAR MONTO MÁXIMO =========================
+rule "Validar monto máximo permitido en Soles"
+    no-loop true
+when
+    $param : SystemParam(name == "LIMITE_MONTO_SOL")
+    $file : ExcelFile()
+    $row : DebtRow(serviceType == "C", currency == "001") from $file.getDebtRows()
+then
+    if($row.getAmount() != null && $row.getAmount().compareTo(new BigDecimal($param.getValue())) > 0) {
+        insert(new DebtError(0, "Monto", $row.getRowIndex(), "Asegúrese de que los montos ingresados no superen el límite permitido (Soles)", $row.getAmount().toString(), 1));
+    }
+end
+
+rule "Validar monto máximo permitido en Dólares"
+    no-loop true
+when
+    $param : SystemParam(name == "LIMITE_MONTO_DOL")
+    $file : ExcelFile()
+    $row : DebtRow(serviceType == "C", currency == "002") from $file.getDebtRows()
+then
+    if($row.getAmount() != null && $row.getAmount().compareTo(new BigDecimal($param.getValue())) > 0) {
+        insert(new DebtError(0, "Monto", $row.getRowIndex(), "Asegúrese de que los montos ingresados no superen el límite permitido (Dólares)", $row.getAmount().toString(), 1));
+    }
+end
+
+
+// ========================= DUPLICIDAD CONTRA BASE DE DATOS =========================
+rule "Duplicidad de código deudor contra base de datos"
+    no-loop true
+when
+    $dbCodes : Set()
+    $row : DebtRow(clientCode != null, $code : clientCode)
+    eval($dbCodes.contains($code))
+then
+    insert(new DebtError(
+        0,
+        "Código de Cliente",
+        $row.getRowIndex(),
+        "El código deudor '" + $code + "' ya existe en la base de datos, el nombre ingresado no se va a actualizar.",
+        $code,
+        1
+    ));
+end
