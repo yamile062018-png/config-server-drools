@@ -140,8 +140,8 @@ when
 then
     if($row.getAmount() == null) {
         insert(new DebtError(0, "Monto", $row.getRowIndex(), "El monto es obligatorio", null, 1));
-    } else if($row.getAmount().compareTo(new BigDecimal("0.01")) < 0) {
-        insert(new DebtError(0, "Monto", $row.getRowIndex(), "El monto debe ser mayor a 0", $row.getAmount().toString(), 1));
+    } else if($row.getAmount().compareTo(new BigDecimal("0.01")) < 1) {
+        insert(new DebtError(0, "Monto", $row.getRowIndex(), "El monto debe ser mayor a 1", $row.getAmount().toString(), 1));
     }
 end
 
